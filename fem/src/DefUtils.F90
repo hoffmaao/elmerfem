@@ -2860,12 +2860,17 @@ CONTAINS
     CHARACTER(LEN=MAX_NAME_LEN) :: linsolver, precond, dumpfile, saveslot
     INTEGER :: NameSpaceI
 
+    CALL Info('DefaultSolve','Solving linear system with default routines',Level=10)
+    
     Solver => CurrentModel % Solver
     Norm = REAL(0, dp)
     IF ( PRESENT( USolver ) ) Solver => USolver
     
-    IF( GetLogical(Solver % Values,'Linear System Solver Disabled',Found) ) RETURN
-
+    IF( GetLogical(Solver % Values,'Linear System Solver Disabled',Found) ) THEN
+      CALL Info('DefaultSolve','Solver disabled, exiting early!',Level=10)
+      RETURN
+    END IF
+      
     A => Solver % Matrix
     b => A % RHS
     x => Solver % Variable
@@ -2875,10 +2880,9 @@ CONTAINS
     
     NameSpaceI = NINT( ListGetCReal( Params,'Linear System Namespace Number', Found ) )
     IF( NameSpaceI > 0 ) THEN
-      CALL Info('DefaultSolver','Linear system namespace number: '//TRIM(I2S(NameSpaceI)),Level=7)
+      CALL Info('DefaultSolve','Linear system namespace number: '//TRIM(I2S(NameSpaceI)),Level=7)
       CALL ListPushNamespace('linsys'//TRIM(I2S(NameSpaceI))//':')
     END IF
-
 
     IF( ListCheckPresent( Params, 'Dump system matrix') .OR. &
         ListCheckPresent( Params, 'Dump system RHS') ) THEN
@@ -2900,10 +2904,11 @@ CONTAINS
       IF (BackRot.NEQV.BackRotNT) &
         CALL ListAddLogical(Params,'Back Rotate N-T Solution',BackRotNT)
     END IF
-
+    
     ! Combine the individual projectors into one massive projector
     CALL GenerateConstraintMatrix( CurrentModel, Solver )
 
+    CALL Info('DefaultSolve','Calling SolveSystem for linear solution',Level=20)
     CALL SolveSystem(A,ParMatrix,b,SOL,x % Norm,x % DOFs,Solver)
 
     ! If flux corrected transport is used then apply the corrector to the system
