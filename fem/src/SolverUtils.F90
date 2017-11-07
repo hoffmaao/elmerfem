@@ -11326,14 +11326,18 @@ END FUNCTION SearchNodeL
     END IF
 
     Method = ListGetString(Params,'Linear System Solver',GotIt)
+    CALL Info('SolveSystem','Linear System Solver: '//TRIM(Method),Level=8)
+
     IF (Method=='multigrid' .OR. Method=='iterative' ) THEN
       Prec = ListGetString(Params,'Linear System Preconditioning',GotIt)
-      IF ( Prec=='vanka' ) CALL VankaCreate(A,Solver)
-      IF ( Prec=='circuit' ) CALL CircuitPrecCreate(A,Solver)
+      IF( GotIt ) THEN
+        CALL Info('SolveSystem','Linear System Preconditioning: '//TRIM(Prec),Level=8)
+        IF ( Prec=='vanka' ) CALL VankaCreate(A,Solver)
+        IF ( Prec=='circuit' ) CALL CircuitPrecCreate(A,Solver)
+      END IF
     END IF
-
-    IF ( ParEnv % PEs <= 1 ) THEN
-
+    
+    IF ( ParEnv % PEs <= 1 ) THEN                 
       SELECT CASE(Method)
       CASE('multigrid')
         CALL MultiGridSolve( A, x, b, &
@@ -11574,7 +11578,9 @@ END FUNCTION SearchNodeL
       END FUNCTION ExecLinSolveProcs
     END INTERFACE
 #endif
+    LOGICAL :: ConstraintBlock
 
+    
 !------------------------------------------------------------------------------
     Params => Solver % Values
 
@@ -11589,6 +11595,10 @@ END FUNCTION SearchNodeL
 
     ResidualMode = ListGetLogical( Params,'Linear System Residual Mode',Found )
 
+    ConstraintBlock = ListGetLogical( Params,'Linear System Constraint Blocks',Found )
+    IF( ConstraintBlock ) CALL Info('SolveSystem','Treating constraints as blocks',Level=12)
+
+    
 !------------------------------------------------------------------------------
 ! The allocation of previous values has to be here in order to 
 ! work properly with the Dirichlet elimination.
@@ -11648,17 +11658,22 @@ END FUNCTION SearchNodeL
     END IF
 
     ConstrainedSolve = 0
-    IF ( ASSOCIATED(A % ConstraintMatrix) )  THEN
-      IF ( A % ConstraintMatrix % NumberOFRows >= 1 ) & 
-        ConstrainedSolve = 1
+
+    ! Here activate constraint solve only if constraints are not treated as blocks
+    IF( .NOT. ConstraintBlock ) THEN
+      IF ( ASSOCIATED(A % ConstraintMatrix) )  THEN
+        IF ( A % ConstraintMatrix % NumberOFRows >= 1 ) & 
+            ConstrainedSolve = 1
+      END IF
+      
+      IF ( ASSOCIATED(A % AddMatrix) )  THEN
+        IF ( A % AddMatrix % NumberOFRows >= 1 ) ConstrainedSolve = 1
+      END IF
+      
+      ConstrainedSolve = ParallelReduction(ConstrainedSolve*1._dp)
     END IF
 
-    IF ( ASSOCIATED(A % AddMatrix) )  THEN
-      IF ( A % AddMatrix % NumberOFRows >= 1 ) ConstrainedSolve = 1
-    END IF
-
-    ConstrainedSolve = ParallelReduction(ConstrainedSolve*1._dp)
-   
+      
     IF ( ConstrainedSolve > 0 ) THEN
       CALL Info('SolveSystem','Solving linear system with constraint matrix',Level=10)
       IF( ListGetLogical( Params,'Save Constraint Matrix',Found ) ) THEN
