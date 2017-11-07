@@ -148,14 +148,15 @@ END INTERFACE
 
 
   TYPE SubVector_t
-     TYPE(Variable_t), POINTER :: Var
-     REAL(KIND=dp) :: rnorm, bnorm, xnorm
-     REAL(KIND=dp), ALLOCATABLE :: rhs(:)
+    TYPE(Variable_t), POINTER :: Var
+    REAL(KIND=dp) :: rnorm, bnorm, xnorm
+    REAL(KIND=dp), ALLOCATABLE :: rhs(:)
+    TYPE(Solver_t), POINTER :: Solver => NULL()
   END TYPE SubVector_t
 
   TYPE SubMatrix_t
-     TYPE(Matrix_t), POINTER :: Mat
-     TYPE(Matrix_t), POINTER :: PrecMat
+    TYPE(Matrix_t), POINTER :: Mat
+    TYPE(Matrix_t), POINTER :: PrecMat
   END TYPE SubMatrix_t
 
   TYPE BlockMatrix_t

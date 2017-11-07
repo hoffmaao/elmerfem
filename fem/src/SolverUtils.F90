@@ -12221,12 +12221,13 @@ SUBROUTINE SolveHarmonicSystem( G, Solver )
     TYPE(Matrix_t), TARGET :: G
 !------------------------------------------------------------------------------
     TYPE(Matrix_t), POINTER :: BMatrix, A => NULL()
-    INTEGER :: Rounds = 1000,i,j,k,n, ILUn, kr, ki, DOFs, ne, niter
-    LOGICAL :: stat, Found, OptimizeBW, DirectLinearSolver,Real_given,Imag_given
+    INTEGER :: i,j,k,n, kr, ki, DOFs, ne, niter
+    LOGICAL :: stat, Found, OptimizeBW, Real_given,Imag_given
     CHARACTER(LEN=MAX_NAME_LEN) :: Name
-    REAL(KIND=dp) :: Omega = 10, norm, TOL=1.0d-6, s, ILUTol
+    REAL(KIND=dp) :: Omega, norm, s
     REAL(KIND=dp), POINTER :: Freqv(:,:)
-    REAL(KIND=dp), ALLOCATABLE :: x(:), b(:)
+    REAL(KIND=dp), ALLOCATABLE :: x(:)
+    REAL(KIND=dp), POINTER :: b(:)
     REAL(KIND=dp) :: frequency
     INTEGER :: Nfrequency
     TYPE(ValueList_t), POINTER :: BC
@@ -12257,7 +12258,10 @@ SUBROUTINE SolveHarmonicSystem( G, Solver )
       BMatrix => A
       A => A % EMatrix
       IF ( ASSOCIATED(A) ) THEN
-        IF ( A % COMPLEX ) EXIT
+        IF ( A % COMPLEX ) THEN
+          CALL Info('SolveHarmonicSystem','Found existing harmonic system',Level=10)
+          EXIT
+        END IF
       END IF
     END DO
 
@@ -12267,10 +12271,13 @@ SUBROUTINE SolveHarmonicSystem( G, Solver )
               ListGetString( Solver % Values, 'Equation') )
       A % COMPLEX = .TRUE.
       BMatrix % EMatrix => A
+      ALLOCATE( A % rhs(2*n) )
     END IF
 
-    ALLOCATE( x(2*n), b(2*n) )
+    b => A % rhs
+    ALLOCATE( x(2*n) )
     x = 0
+
     b(1:2*n:2) = G % RHS(1:n)
     b(2:2*n:2) = G % RHS_im(1:n)
 
@@ -12348,7 +12355,116 @@ SUBROUTINE SolveHarmonicSystem( G, Solver )
 !------------------------------------------------------------------------------
 
 
+!------------------------------------------------------------------------------
+!> Just creates a harmonic system, Ax=b. Do not solve it.
+!------------------------------------------------------------------------------
+SUBROUTINE CreateHarmonicSystem( G, Solver )
+!------------------------------------------------------------------------------
+    TYPE(Solver_t) :: Solver
+    TYPE(Matrix_t), TARGET :: G
+!------------------------------------------------------------------------------
+    TYPE(Matrix_t), POINTER :: BMatrix, A => NULL()
+    INTEGER :: i,j,k,n, kr, ki, DOFs
+    LOGICAL :: stat, Found, OptimizeBW, Real_given, Imag_given
+    CHARACTER(LEN=MAX_NAME_LEN) :: Name
+    REAL(KIND=dp) :: Omega, s
+    REAL(KIND=dp), POINTER :: b(:)
+    REAL(KIND=dp) :: frequency
+    TYPE(ValueList_t), POINTER :: BC
 
+    n = Solver % Matrix % NumberofRows
+    DOFs = Solver % Variable % DOFs * 2
+
+    OptimizeBW = ListGetLogical(Solver % Values, 'Optimize Bandwidth', Found)
+    IF ( .NOT. Found ) OptimizeBW = .TRUE.
+
+    A => G
+    DO WHILE( ASSOCIATED(A) )
+      BMatrix => A
+      A => A % EMatrix
+      IF ( ASSOCIATED(A) ) THEN
+        IF ( A % COMPLEX ) THEN
+          CALL Info('CreateHarmonicSystem','Found existing harmonic system',Level=10)
+          EXIT
+        END IF
+      END IF
+    END DO
+
+    IF ( .NOT. ASSOCIATED(A) ) THEN
+      A => CreateMatrix( CurrentModel, Solver, Solver % Mesh,   &
+              Solver % Variable % Perm, DOFs, MATRIX_CRS, OptimizeBW, &
+              ListGetString( Solver % Values, 'Equation') )
+      A % COMPLEX = .TRUE.
+      BMatrix % EMatrix => A
+      ALLOCATE( A % rhs(2*n) )
+    END IF
+
+    b => A % rhs
+
+    b(1:2*n:2) = G % RHS(1:n)
+    b(2:2*n:2) = G % RHS_im(1:n)
+
+    Frequency = ListGetAngularFrequency( Solver % Values, Found ) / (2*PI)
+    IF( .NOT. Found ) THEN
+      CALL Fatal( 'AddEquation', '> Frequency < must be given for harmonic analysis.' )
+    END IF
+
+    WRITE( Message, '(a,e12.3)' ) 'Frequency value: ', frequency
+    CALL Info( 'CreateHarmonicSystem', Message )
+    
+    omega = 2 * PI * Frequency
+    DO k=1,n
+      kr = A % Rows(2*(k-1)+1)
+      ki = A % Rows(2*(k-1)+2)
+      DO j=G % Rows(k),G % Rows(k+1)-1
+        A % Values(kr)   =  G % Values(j)
+        IF (ASSOCIATED(G % MassValues)) A % Values(kr) = &
+            A % Values(kr) - omega**2*G % MassValues(j)
+        IF (ASSOCIATED(G % DampValues)) THEN
+          A % Values(kr+1) = -G % Dampvalues(j) * omega
+          A % Values(ki)   =  G % Dampvalues(j) * omega
+        END IF
+        A % Values(ki+1) =  G % Values(j)
+        IF (ASSOCIATED(G % MassValues)) A % Values(ki+1) = &
+            A % Values(ki+1) - omega**2*G % MassValues(j)
+        kr = kr + 2
+        ki = ki + 2
+      END DO
+    END DO
+
+    ! Finally set the Dirichlet conditions for the solver    
+    DO j=1,Solver % Variable % DOFs
+      Name = ComponentName( Solver % Variable % Name, j ) 
+      DO i=1,CurrentModel % NumberOFBCs
+        BC => CurrentModel % BCs(i) % Values
+        real_given = ListCheckPresent( BC, Name )
+        imag_given = ListCheckPresent( BC, TRIM(Name) // ' im' )
+
+        IF ( real_given .AND. .NOT. imag_given ) THEN
+          CALL ListAddConstReal( BC, TRIM(Name) // ' im', 0._dp)
+        ELSE IF ( imag_given .AND. .NOT. real_given ) THEN
+          CALL ListAddConstReal( BC, Name, 0._dp )
+        END IF
+      END DO
+    END DO
+    
+
+    DO j=1,Solver % Variable % DOFs
+      Name = ComponentName( Solver % Variable % Name, j ) 
+      
+      CALL SetDirichletBoundaries( CurrentModel, A, b, Name, &
+          2*j-1, DOFs, Solver % Variable % Perm )
+      
+      CALL SetDirichletBoundaries( CurrentModel, A, b, TRIM(Name) // ' im', &
+          2*j, DOFs, Solver % Variable % Perm )
+    END DO
+    
+!------------------------------------------------------------------------------
+  END SUBROUTINE CreateHarmonicSystem
+!------------------------------------------------------------------------------
+
+
+ 
 !------------------------------------------------------------------------------
 !>  This subroutine will solve the system with some linear restriction.
 !>  The restriction matrix is assumed to be in the ConstraintMatrix-field of 
@@ -13704,6 +13820,181 @@ CONTAINS
   END SUBROUTINE MassMatrixAssembly
 
 
+
+!------------------------------------------------------------------------------
+!> Assemble mass matrix related to a solver and permutation vector. 
+!------------------------------------------------------------------------------
+  SUBROUTINE FsiCouplingAssembly( Solver, FVar, SVar, A_fs, A_sf )
+    
+    TYPE(Solver_t) :: Solver          ! leading solver
+    TYPE(Variable_t), POINTER :: FVar ! fluid variable
+    TYPE(Variable_t), POINTER :: SVar ! structure variable
+    TYPE(Matrix_t), POINTER :: A_fs, A_sf
+    !------------------------------------------------------------------------------
+    INTEGER, POINTER :: FPerm(:), SPerm(:)
+    INTEGER :: FDofs, SDofs
+    TYPE(Mesh_t), POINTER :: Mesh
+    INTEGER, POINTER :: Indexes(:), pIndexes(:)
+    INTEGER :: i,j,ii,jj,k,n,t,istat,pn
+    TYPE(Element_t), POINTER :: Element, Parent
+    TYPE(GaussIntegrationPoints_t) :: IP
+    TYPE(Nodes_t) :: Nodes
+    REAL(KIND=dp), ALLOCATABLE :: MASS(:,:)
+    REAL(KIND=dp), POINTER :: Basis(:)
+    REAL(KIND=dp) :: detJ, val, c(3), pc(3), Normal(3), coeff, Omega, Rho
+    LOGICAL :: Stat
+    INTEGER :: dim,mat_id
+
+    CALL Info('FsiCouplingAssembly','Creating coupling matrix for harmonic FSI',Level=6)
+    
+    Omega = 2 * PI * ListGetCReal( CurrentModel % Simulation,'Frequency',Stat ) 
+    IF( .NOT. Stat) THEN
+      CALL Fatal('FsiCouplingAssembly','Frequency in Simulation list not found!')
+    END IF
+    
+    Mesh => Solver % Mesh
+    FPerm => FVar % Perm
+    SPerm => SVar % Perm
+    
+    fdofs = FVar % Dofs
+    sdofs = SVar % Dofs
+
+    dim = fdofs / 2
+    
+    
+    i = SIZE( FVar % Values ) 
+    j = SIZE( SVar % Values ) 
+    
+    CALL Info('FsiCouplingAssembly','Fluid dofs '//TRIM(I2S(i))//&
+        ' with '//TRIM(I2S(fdofs))//' components',Level=10)
+    CALL Info('FsiCouplingAssembly','Structure dofs '//TRIM(I2S(j))//&
+        ' with '//TRIM(I2S(sdofs))//' components',Level=10)   
+    CALL Info('FsiCouplingAssembly','Assuming '//TRIM(I2S(dim))//&
+        ' active dimensions',Level=10)   
+    
+    CALL AddToMatrixElement(A_fs,i,j,0.0_dp)
+    CALL AddToMatrixElement(A_sf,j,i,0.0_dp)
+    
+    N = Mesh % MaxElementNodes 
+    ALLOCATE( Basis(n), MASS(N,N), Nodes % x(n), Nodes % y(n), Nodes % z(n), &
+        STAT=istat)
+    
+    DO t=Mesh % NumberOfBulkElements+1, &
+        Mesh % NumberOfBulkElements + Mesh % NumberOfBoundaryElements
+      
+      Element => Mesh % Elements(t)
+      n = Element % TYPE % NumberOfNodes
+      Indexes => Element % NodeIndexes
+      
+      IF( ANY( FPerm(Indexes) == 0 ) ) CYCLE
+      IF( ANY( SPerm(Indexes) == 0 ) ) CYCLE
+      IF( .NOT. ASSOCIATED( Element % BoundaryInfo ) ) CYCLE
+      
+      Nodes % x(1:n) = Mesh % Nodes % x(Indexes)
+      Nodes % y(1:n) = Mesh % Nodes % y(Indexes)
+      Nodes % z(1:n) = Mesh % Nodes % z(Indexes)
+      
+      Normal = NormalVector( Element, Nodes )
+      
+      ! The following is done in order to check that the normal points to the fluid      
+      Parent => Element % BoundaryInfo % Left
+      IF( ASSOCIATED( Parent ) ) THEN
+        IF( ANY( FPerm(Parent % NodeIndexes) == 0 ) ) Parent => NULL()
+      END IF
+      
+      Parent => Element % BoundaryInfo % Right
+      IF( ASSOCIATED( Parent ) ) THEN
+        IF( ANY( FPerm(Parent % NodeIndexes) == 0 ) ) Parent => NULL()
+      END IF
+      
+      ! Could not find a proper fluid element to define the normal 
+      IF(.NOT. ASSOCIATED( Parent ) ) CYCLE
+
+      pn = Parent % TYPE % NumberOfNodes
+      pIndexes => Parent % NodeIndexes
+      
+      c(1) =  SUM( Nodes % x(1:n) ) / n
+      c(2) =  SUM( Nodes % y(1:n) ) / n
+      c(3) =  SUM( Nodes % z(1:n) ) / n
+      
+      pc(1) =  SUM( Mesh % Nodes % x(pIndexes) ) / pn
+      pc(2) =  SUM( Mesh % Nodes % y(pIndexes) ) / pn
+      pc(3) =  SUM( Mesh % Nodes % z(pIndexes) ) / pn
+      
+      ! The normal vector has negative projection to the vector drawn from center of
+      ! boundary element to the center of bulk element. 
+      IF( SUM( (pc-c) * Normal ) < 0.0_dp ) THEN
+        Normal = -Normal
+      END IF
+      
+      MASS = 0.0_dp
+      
+      mat_id = ListGetInteger( CurrentModel % Bodies(Parent % BodyId) % Values,'Material' )
+      rho = ListGetConstReal( CurrentModel % Materials(mat_id) % Values,'Density',Stat)
+      IF( .NOT. Stat) THEN
+        CALL Fatal('FsiCouplingAssembly','Fluid density not found!')
+      END IF
+      
+      coeff = -rho * omega**2
+      
+      
+      ! Numerical integration:
+      !----------------------
+      IP = GaussPoints( Element )
+      
+      DO k=1,IP % n
+        
+        ! Basis function values & derivatives at the integration point:
+        !--------------------------------------------------------------
+        stat = ElementInfo( Element, Nodes, IP % U(k), IP % V(k), &
+            IP % W(k),  detJ, Basis )
+        
+        ! Finally, the elemental matrix & vector:
+        !----------------------------------------
+        DO i=1,n
+          val = IP % s(k) * DetJ 
+          DO j=1,n
+            MASS(i,j) = MASS(i,j) + val * Basis(i) * Basis(j)
+          END DO
+        END DO
+      END DO
+      
+      DO i=1,n
+        ii = Indexes(i)
+        DO j=1,n
+          jj = Indexes(j)
+
+          val = MASS(i,j)
+          
+          DO k=1,dim            
+            ! Fluid load on the structure: tau \cdot n = p * n
+            CALL AddToMatrixElement(A_fs,2*dim*(FPerm(ii)-1)+2*k-1,2*SPerm(jj)-1,val*Normal(k)) ! Re
+            CALL AddToMatrixElement(A_fs,2*dim*(FPerm(ii)-1)+2*k,2*SPerm(jj),val*Normal(k))     ! Im
+            
+            ! Structure load on the fluid: dp/dn = -rho*omega^2*n
+            CALL AddToMatrixElement(A_sf,2*SPerm(jj)-1,2*dim*(FPerm(ii)-1)+2*k-1,val*Normal(k)*coeff) ! Re 
+            CALL AddToMatrixElement(A_sf,2*SPerm(jj)-1,2*dim*(FPerm(ii)-1)+2*k-1,val*Normal(k)*coeff) ! Im
+          END DO
+          
+        END DO
+      END DO
+      
+    END DO
+    
+    DEALLOCATE( Basis, MASS, Nodes % x, Nodes % y, Nodes % z)
+
+    CALL List_toCRSMatrix(A_fs)
+    CALL List_toCRSMatrix(A_sf)
+
+    CALL Info('FsiCouplingAssembly','Add done',Level=20)
+
+    
+  END SUBROUTINE FsiCouplingAssembly
+
+
+
+
+  
 !---------------------------------------------------------------------------------
 !> Multiply a linear system by a constant or a given scalar field.
 !
