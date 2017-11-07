@@ -1530,6 +1530,8 @@ CONTAINS
      CHARACTER(:), ALLOCATABLE :: tstr
      TYPE(String_stack_t), POINTER :: stack
 !------------------------------------------------------------------------------
+     CALL Info('ListPushNameSpace','Adding name space: '//TRIM(str),Level=15)
+
      ALLOCATE(stack)
      L = ListGetNameSpace(tstr)
      IF(ALLOCATED(tstr)) THEN
@@ -1549,6 +1551,9 @@ CONTAINS
 !------------------------------------------------------------------------------
      TYPE(String_stack_t), POINTER :: stack
 !------------------------------------------------------------------------------
+     
+     CALL Info('ListPopNameSpace','Deleting entry from name space',Level=15)
+
      IF(ASSOCIATED(Namespace_stack)) THEN
        Namespace = Namespace_stack % name
        stack => Namespace_stack
